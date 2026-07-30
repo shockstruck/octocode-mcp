@@ -17,9 +17,24 @@ export const ItemPaginationSchema = z.object({
   nextPage: z.number().optional(),
   pageSize: z.number().optional(),
   totalItems: z.number().optional(),
+  totalResults: z.number().optional(),
+  itemsPerPage: z.number().optional(),
 });
 
 export type ItemPagination = z.infer<typeof ItemPaginationSchema>;
+
+export const LocalItemPaginationSchema = ItemPaginationSchema.extend({
+  filesPerPage: z.number().optional(),
+  entriesPerPage: z.number().optional(),
+  matchesPerPage: z.number().optional(),
+  totalFiles: z.number().optional(),
+  totalEntries: z.number().optional(),
+  totalMatches: z.number().optional(),
+  totalFilesFound: z.number().optional(),
+  nextMatchPage: z.number().optional(),
+});
+
+export type LocalItemPagination = z.infer<typeof LocalItemPaginationSchema>;
 
 // ---------------------------------------------------------------------------
 // Char pagination — for file content windows, PR bodies, archive extraction

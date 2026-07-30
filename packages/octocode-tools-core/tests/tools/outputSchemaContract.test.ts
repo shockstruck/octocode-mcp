@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
+import { z } from 'zod';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { resetPathValidator } from '@octocodeai/octocode-engine/pathValidator';
 
 import { executeDirectTool } from '../../src/tools/directToolCatalog.js';
 import { executeBulkOperation } from '../../src/utils/response/bulk.js';
@@ -31,11 +37,11 @@ import { LspGetSemanticsOutputSchema } from '../../src/tools/lsp/semantic_conten
 // cwd is the tools-core package dir.
 const PKG_DIR = process.cwd();
 const REPO_ROOT = path.resolve(PKG_DIR, '..', '..');
-const ENGINE_NODE = path.join(
+const BINARY_FIXTURE = path.join(
   REPO_ROOT,
-  'packages',
-  'octocode-engine',
-  'octocode-engine.darwin-arm64.node'
+  '.yarn',
+  'releases',
+  'yarn-4.9.1.cjs'
 );
 
 type StructuredContent = Record<string, unknown>;
@@ -43,25 +49,78 @@ type StructuredContent = Record<string, unknown>;
 /**
  * The SDK validates structuredContent against outputSchema on every NON-error
  * result (isError:true is exempt). A drifted schema turns a good result into a
- * runtime error, so these tests assert the emitted structuredContent parses.
+ * runtime error, so these tests assert the advertised JSON Schema accepts the
+ * emitted structuredContent through a real MCP client.
  */
-function structuredOf(result: { structuredContent?: unknown }): StructuredContent {
+function structuredOf(result: {
+  structuredContent?: unknown;
+}): StructuredContent {
   expect(result.structuredContent).toBeTypeOf('object');
   return result.structuredContent as StructuredContent;
 }
 
-describe('MCP outputSchema contract — emitted structuredContent parses', () => {
+async function expectMcpOutputContract(
+  toolName: string,
+  outputSchema: z.ZodType,
+  result: CallToolResult
+): Promise<void> {
+  structuredOf(result);
+
+  const server = new McpServer({ name: 'contract-server', version: '0.0.0' });
+  const client = new Client({ name: 'contract-client', version: '0.0.0' });
+  const [serverTransport, clientTransport] =
+    InMemoryTransport.createLinkedPair();
+
+  server.registerTool(
+    toolName,
+    {
+      inputSchema: {},
+      outputSchema: outputSchema as never,
+    },
+    async () => result
+  );
+
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+
+  try {
+    const listed = await client.listTools();
+    expect(
+      listed.tools.find(tool => tool.name === toolName)?.outputSchema
+    ).toBeDefined();
+
+    const validated = await client.callTool({ name: toolName, arguments: {} });
+    expect(validated.isError).toBeFalsy();
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+describe('MCP outputSchema contract — client validates structuredContent', () => {
   const originalEnableLocal = process.env.ENABLE_LOCAL;
+  const originalAllowedPaths = process.env.ALLOWED_PATHS;
+  const originalWorkspaceRoot = process.env.WORKSPACE_ROOT;
 
   beforeAll(() => {
     setRuntimeSurface('mcp');
     process.env.ENABLE_LOCAL = 'true';
+    process.env.ALLOWED_PATHS = REPO_ROOT;
+    process.env.WORKSPACE_ROOT = REPO_ROOT;
+    resetPathValidator({ workspaceRoot: REPO_ROOT, includeHomeDir: false });
     cleanup();
   });
 
   afterAll(() => {
     if (originalEnableLocal === undefined) delete process.env.ENABLE_LOCAL;
     else process.env.ENABLE_LOCAL = originalEnableLocal;
+    if (originalAllowedPaths === undefined) delete process.env.ALLOWED_PATHS;
+    else process.env.ALLOWED_PATHS = originalAllowedPaths;
+    if (originalWorkspaceRoot === undefined) delete process.env.WORKSPACE_ROOT;
+    else process.env.WORKSPACE_ROOT = originalWorkspaceRoot;
+    resetPathValidator();
     _resetRuntimeSurface();
     cleanup();
   });
@@ -84,7 +143,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(LocalSearchCodeOutputSchema.parse(structuredOf(result))).toBeDefined();
+    await expectMcpOutputContract(
+      'localSearchCode',
+      LocalSearchCodeOutputSchema,
+      result
+    );
   });
 
   it('localFindFiles', async () => {
@@ -100,7 +163,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(LocalFindFilesOutputSchema.parse(structuredOf(result))).toBeDefined();
+    await expectMcpOutputContract(
+      'localFindFiles',
+      LocalFindFilesOutputSchema,
+      result
+    );
   });
 
   it('localViewStructure', async () => {
@@ -115,9 +182,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(
-      LocalViewStructureOutputSchema.parse(structuredOf(result))
-    ).toBeDefined();
+    await expectMcpOutputContract(
+      'localViewStructure',
+      LocalViewStructureOutputSchema,
+      result
+    );
   });
 
   it('localGetFileContent', async () => {
@@ -131,16 +200,18 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(
-      LocalGetFileContentOutputSchema.parse(structuredOf(result))
-    ).toBeDefined();
+    await expectMcpOutputContract(
+      'localGetFileContent',
+      LocalGetFileContentOutputSchema,
+      result
+    );
   });
 
   it('localBinaryInspect', async () => {
     const result = await executeDirectTool('localBinaryInspect', {
       queries: [
         {
-          path: ENGINE_NODE,
+          path: BINARY_FIXTURE,
           mode: 'inspect',
           mainResearchGoal: 'contract test',
           researchGoal: 'contract test',
@@ -148,9 +219,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(
-      LocalBinaryInspectOutputSchema.parse(structuredOf(result))
-    ).toBeDefined();
+    await expectMcpOutputContract(
+      'localBinaryInspect',
+      LocalBinaryInspectOutputSchema,
+      result
+    );
   });
 
   it('lspGetSemantics — resolved definition', async () => {
@@ -166,7 +239,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(LspGetSemanticsOutputSchema.parse(structuredOf(result))).toBeDefined();
+    await expectMcpOutputContract(
+      'lspGetSemantics',
+      LspGetSemanticsOutputSchema,
+      result
+    );
   });
 
   it('lspGetSemantics — symbolNotFound (lsp field omitted)', async () => {
@@ -182,7 +259,9 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
         },
       ],
     });
-    expect(LspGetSemanticsOutputSchema.parse(structuredOf(result))).toBeDefined();
+    expect(
+      LspGetSemanticsOutputSchema.parse(structuredOf(result))
+    ).toBeDefined();
   });
 
   // ----------------------------------------------------------------------
@@ -191,7 +270,7 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
   // shaped like real provider output. No network.
   // ----------------------------------------------------------------------
 
-  it('ghSearchCode', () => {
+  it('ghSearchCode', async () => {
     const finalize = buildGhSearchCodeFinalizer();
     const out = finalize({
       queries: [{ id: 'q1', keywords: ['foo'] }] as never,
@@ -218,9 +297,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
       ] as unknown as FlatQueryResult[],
       config: {} as never,
     });
-    expect(
-      GitHubCodeSearchOutputLocalSchema.parse(structuredOf(out))
-    ).toBeDefined();
+    await expectMcpOutputContract(
+      'ghSearchCode',
+      GitHubCodeSearchOutputLocalSchema,
+      out
+    );
   });
 
   it('ghSearchCode — empty + error rows', () => {
@@ -242,7 +323,7 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
     ).toBeDefined();
   });
 
-  it('ghGetFileContent', () => {
+  it('ghGetFileContent', async () => {
     const finalize = buildGithubFetchContentFinalizer();
     const out = finalize({
       queries: [
@@ -255,6 +336,7 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
           data: {
             path: 'README.md',
             content: '# Hello',
+            fileSize: 7,
             totalLines: 1,
             startLine: 1,
             endLine: 1,
@@ -263,9 +345,11 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
       ] as unknown as FlatQueryResult[],
       config: {} as never,
     });
-    expect(
-      GitHubFetchContentOutputLocalSchema.parse(structuredOf(out))
-    ).toBeDefined();
+    await expectMcpOutputContract(
+      'ghGetFileContent',
+      GitHubFetchContentOutputLocalSchema,
+      out
+    );
   });
 
   it('ghGetFileContent — error row', () => {
@@ -301,94 +385,124 @@ describe('MCP outputSchema contract — emitted structuredContent parses', () =>
       status: undefined,
       ...data,
     });
-    return executeBulkOperation(
-      [{ id: 'q1' }],
-      processor,
-      { toolName, keysPriority },
-    );
+    return executeBulkOperation([{ id: 'q1' }], processor, {
+      toolName,
+      keysPriority,
+    });
   }
 
   it('ghSearchRepos', async () => {
-    const result = await runBulk('ghSearchRepos', ['repositories', 'pagination', 'error'], {
-      repositories: [
-        {
-          owner: 'octo',
-          repo: 'repo',
-          full_name: 'octo/repo',
-          url: 'https://github.com/octo/repo',
-          stars: 10,
-          language: 'TypeScript',
-          description: 'a repo',
-        },
-      ],
-      pagination: { currentPage: 1, totalPages: 1, hasMore: false },
-    });
-    expect(
-      GitHubSearchRepositoriesOutputLocalSchema.parse(structuredOf(result))
-    ).toBeDefined();
+    const result = await runBulk(
+      'ghSearchRepos',
+      ['repositories', 'pagination', 'error'],
+      {
+        repositories: [
+          {
+            owner: 'octo',
+            repo: 'repo',
+            url: 'https://github.com/octo/repo',
+            stars: 10,
+            language: 'TypeScript',
+            description: 'a repo',
+          },
+        ],
+        pagination: { currentPage: 1, totalPages: 1, hasMore: false },
+      }
+    );
+    await expectMcpOutputContract(
+      'ghSearchRepos',
+      GitHubSearchRepositoriesOutputLocalSchema,
+      result
+    );
   });
 
   it('ghHistoryResearch (pull requests)', async () => {
-    const result = await runBulk('ghHistoryResearch', ['pull_requests', 'pagination', 'error'], {
-      pull_requests: [
-        {
-          number: 1,
-          title: 'a PR',
-          url: 'https://github.com/octo/repo/pull/1',
-          state: 'closed',
-          merged: true,
-          author: 'octo',
-        },
-      ],
-      total_count: 1,
-      pagination: { currentPage: 1, totalPages: 1, hasMore: false },
-    });
-    expect(
-      GitHubSearchPullRequestsOutputLocalSchema.parse(structuredOf(result))
-    ).toBeDefined();
+    const result = await runBulk(
+      'ghHistoryResearch',
+      ['pull_requests', 'pagination', 'error'],
+      {
+        pull_requests: [
+          {
+            number: 1,
+            title: 'a PR',
+            url: 'https://github.com/octo/repo/pull/1',
+            state: 'closed',
+            merged: true,
+            author: 'octo',
+          },
+        ],
+        total_count: 1,
+        pagination: { currentPage: 1, totalPages: 1, hasMore: false },
+      }
+    );
+    await expectMcpOutputContract(
+      'ghHistoryResearch',
+      GitHubSearchPullRequestsOutputLocalSchema,
+      result
+    );
   });
 
   it('ghViewRepoStructure', async () => {
-    const result = await runBulk('ghViewRepoStructure', ['entries', 'pagination', 'error'], {
-      entries: [
-        { path: 'src', name: 'src', type: 'dir' },
-        { path: 'README.md', name: 'README.md', type: 'file', size: 100 },
-      ],
-      pagination: { currentPage: 1, totalPages: 1, hasMore: false },
-    });
-    expect(
-      GitHubViewRepoStructureOutputLocalSchema.parse(structuredOf(result))
-    ).toBeDefined();
+    const result = await runBulk(
+      'ghViewRepoStructure',
+      ['entries', 'pagination', 'error'],
+      {
+        entries: [
+          { path: 'src', name: 'src', type: 'dir' },
+          { path: 'README.md', name: 'README.md', type: 'file', size: 100 },
+        ],
+        pagination: { currentPage: 1, totalPages: 1, hasMore: false },
+      }
+    );
+    await expectMcpOutputContract(
+      'ghViewRepoStructure',
+      GitHubViewRepoStructureOutputLocalSchema,
+      result
+    );
   });
 
   it('ghCloneRepo', async () => {
-    const result = await runBulk('ghCloneRepo', ['localPath', 'resolvedBranch', 'error'], {
-      localPath: '/tmp/repo',
-      resolvedBranch: 'main',
-      cached: false,
-      location: {
-        kind: 'repo',
+    const result = await runBulk(
+      'ghCloneRepo',
+      ['localPath', 'resolvedBranch', 'error'],
+      {
         localPath: '/tmp/repo',
-        source: 'clone',
-      },
-    });
-    expect(
-      GitHubCloneRepoOutputLocalSchema.parse(structuredOf(result))
-    ).toBeDefined();
+        resolvedBranch: 'main',
+        cached: false,
+        location: {
+          kind: 'repo',
+          localPath: '/tmp/repo',
+          source: 'clone',
+        },
+      }
+    );
+    await expectMcpOutputContract(
+      'ghCloneRepo',
+      GitHubCloneRepoOutputLocalSchema,
+      result
+    );
   });
 
   it('npmSearch', async () => {
-    const result = await runBulk('npmSearch', ['packages', 'pagination', 'error'], {
-      packages: [
-        {
-          name: 'react',
-          version: '18.0.0',
-          license: 'MIT',
-          description: 'A library',
-          downloads: 1000,
-        },
-      ],
-    });
-    expect(NpmSearchOutputLocalSchema.parse(structuredOf(result))).toBeDefined();
+    const result = await runBulk(
+      'npmSearch',
+      ['packages', 'pagination', 'error'],
+      {
+        packages: [
+          {
+            name: 'react',
+            version: '18.0.0',
+            license: 'MIT',
+            description: 'A library',
+            downloads: 1000,
+          },
+        ],
+      }
+    );
+    await expectMcpOutputContract(
+      'npmSearch',
+      NpmSearchOutputLocalSchema,
+      result
+    );
   });
 });

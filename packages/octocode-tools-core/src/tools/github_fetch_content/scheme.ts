@@ -53,6 +53,7 @@ const GitHubFetchFileEntrySchema = z.object({
   totalLines: z.number().optional(),
   sourceChars: z.number().optional(),
   sourceBytes: z.number().optional(),
+  fileSize: z.number().optional(),
   resolvedBranch: z.string().optional(),
   pagination: GitHubFetchFilePaginationSchema.optional(),
   next: GitHubFetchFileNextSchema.optional(),

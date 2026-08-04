@@ -66,14 +66,29 @@ const LocalViewStructureDataSchema = z.object({
   warnings: z.array(z.string()).optional(),
 });
 
+const LocalViewStructureErrorDataSchema = z.object({
+  error: z.string(),
+  errorCode: z.string().optional(),
+  toolName: z.string().optional(),
+  cwd: z.string().optional(),
+  resolvedPath: z.string().optional(),
+});
+
 export const LocalViewStructureOutputSchema = z
   .object({
     results: z.array(
-      z.object({
-        id: z.string(),
-        status: z.enum(['empty', 'error']).optional(),
-        data: LocalViewStructureDataSchema,
-      })
+      z.union([
+        z.object({
+          id: z.string(),
+          status: z.literal('empty').optional(),
+          data: LocalViewStructureDataSchema,
+        }),
+        z.object({
+          id: z.string(),
+          status: z.literal('error'),
+          data: LocalViewStructureErrorDataSchema,
+        }),
+      ])
     ),
   })
   .extend(bulkOutputEnvelopeFields);

@@ -43,6 +43,15 @@ const BINARY_FIXTURE = path.join(
   'releases',
   'yarn-4.9.1.cjs'
 );
+const MISSING_LOCAL_PATH = path.join(
+  REPO_ROOT,
+  '__octocode_output_contract_missing__'
+);
+const OUTSIDE_LOCAL_PATH = path.resolve(
+  REPO_ROOT,
+  '..',
+  '__octocode_output_contract_outside__'
+);
 
 type StructuredContent = Record<string, unknown>;
 
@@ -97,6 +106,34 @@ async function expectMcpOutputContract(
     await client.close();
     await server.close();
   }
+}
+
+async function expectMcpErrorOutputContract(
+  toolName: string,
+  outputSchema: z.ZodType,
+  result: CallToolResult,
+  expectedData: Record<string, unknown>
+): Promise<void> {
+  expect(result.isError).toBe(true);
+
+  const structured = structuredOf(result);
+  const results = structured.results as Array<Record<string, unknown>>;
+  expect(results).toHaveLength(1);
+  expect(results[0]?.status).toBe('error');
+
+  const data = results[0]?.data as Record<string, unknown>;
+  expect(data.error).toBeTypeOf('string');
+  expect(data).toMatchObject(expectedData);
+  expect(Object.keys(data).sort()).toEqual(
+    ['error', ...Object.keys(expectedData)].sort()
+  );
+
+  // Context Forge validates structuredContent even when the MCP result is an
+  // error. Force the SDK down its equivalent validation path for this test.
+  await expectMcpOutputContract(toolName, outputSchema, {
+    ...result,
+    isError: false,
+  });
 }
 
 describe('MCP outputSchema contract — client validates structuredContent', () => {
@@ -189,6 +226,52 @@ describe('MCP outputSchema contract — client validates structuredContent', () 
     );
   });
 
+  it('localViewStructure — missing allowed path', async () => {
+    const result = await executeDirectTool('localViewStructure', {
+      queries: [
+        {
+          path: MISSING_LOCAL_PATH,
+          mainResearchGoal: 'contract test',
+          researchGoal: 'contract test',
+          reasoning: 'contract test',
+        },
+      ],
+    });
+    await expectMcpErrorOutputContract(
+      'localViewStructure',
+      LocalViewStructureOutputSchema,
+      result,
+      {
+        errorCode: 'pathValidationFailed',
+        toolName: 'localViewStructure',
+      }
+    );
+  });
+
+  it('localViewStructure — outside allowed path', async () => {
+    const result = await executeDirectTool('localViewStructure', {
+      queries: [
+        {
+          path: OUTSIDE_LOCAL_PATH,
+          mainResearchGoal: 'contract test',
+          researchGoal: 'contract test',
+          reasoning: 'contract test',
+        },
+      ],
+    });
+    await expectMcpErrorOutputContract(
+      'localViewStructure',
+      LocalViewStructureOutputSchema,
+      result,
+      {
+        errorCode: 'pathValidationFailed',
+        toolName: 'localViewStructure',
+        cwd: REPO_ROOT,
+        resolvedPath: OUTSIDE_LOCAL_PATH,
+      }
+    );
+  });
+
   it('localGetFileContent', async () => {
     const result = await executeDirectTool('localGetFileContent', {
       queries: [
@@ -204,6 +287,53 @@ describe('MCP outputSchema contract — client validates structuredContent', () 
       'localGetFileContent',
       LocalGetFileContentOutputSchema,
       result
+    );
+  });
+
+  it('localGetFileContent — missing allowed path', async () => {
+    const result = await executeDirectTool('localGetFileContent', {
+      queries: [
+        {
+          path: MISSING_LOCAL_PATH,
+          mainResearchGoal: 'contract test',
+          researchGoal: 'contract test',
+          reasoning: 'contract test',
+        },
+      ],
+    });
+    await expectMcpErrorOutputContract(
+      'localGetFileContent',
+      LocalGetFileContentOutputSchema,
+      result,
+      {
+        errorCode: 'fileAccessFailed',
+        toolName: 'localGetFileContent',
+        resolvedPath: MISSING_LOCAL_PATH,
+      }
+    );
+  });
+
+  it('localGetFileContent — outside allowed path', async () => {
+    const result = await executeDirectTool('localGetFileContent', {
+      queries: [
+        {
+          path: OUTSIDE_LOCAL_PATH,
+          mainResearchGoal: 'contract test',
+          researchGoal: 'contract test',
+          reasoning: 'contract test',
+        },
+      ],
+    });
+    await expectMcpErrorOutputContract(
+      'localGetFileContent',
+      LocalGetFileContentOutputSchema,
+      result,
+      {
+        errorCode: 'pathValidationFailed',
+        toolName: 'localGetFileContent',
+        cwd: REPO_ROOT,
+        resolvedPath: OUTSIDE_LOCAL_PATH,
+      }
     );
   });
 

@@ -86,14 +86,29 @@ const LocalGetFileContentDataSchema = z.object({
   searchedFor: z.string().optional(),
 });
 
+const LocalGetFileContentErrorDataSchema = z.object({
+  error: z.string(),
+  errorCode: z.string().optional(),
+  toolName: z.string().optional(),
+  cwd: z.string().optional(),
+  resolvedPath: z.string().optional(),
+});
+
 export const LocalGetFileContentOutputSchema = z
   .object({
     results: z.array(
-      z.object({
-        id: z.string(),
-        status: z.enum(['empty', 'error']).optional(),
-        data: LocalGetFileContentDataSchema,
-      })
+      z.union([
+        z.object({
+          id: z.string(),
+          status: z.literal('empty').optional(),
+          data: LocalGetFileContentDataSchema,
+        }),
+        z.object({
+          id: z.string(),
+          status: z.literal('error'),
+          data: LocalGetFileContentErrorDataSchema,
+        }),
+      ])
     ),
   })
   .extend(bulkOutputEnvelopeFields);

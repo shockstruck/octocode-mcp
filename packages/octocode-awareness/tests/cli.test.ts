@@ -985,13 +985,18 @@ describe('CLI', () => {
     const packageJsonPath = resolve(dirname(fileURLToPath(import.meta.url)), '../package.json');
     const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
       name?: string;
-      bin?: Record<string, string>;
+      bin?: string | Record<string, string>;
       publishConfig?: Record<string, string>;
     };
     expect(pkg.name).toBe('@octocodeai/octocode-awareness');
     expect(pkg.publishConfig?.access).toBe('public');
-    expect(pkg.bin?.['octocode-awareness']).toBe('./dist/bin/awareness.js');
-    expect(pkg.bin ?? {}).not.toHaveProperty('awareness');
+    // npm derives a string bin's command from the unscoped package name.
+    const bin = typeof pkg.bin === 'string'
+      ? { [pkg.name?.split('/').pop() ?? '']: pkg.bin }
+      : pkg.bin ?? {};
+    // npm normalises executable targets to package-relative paths without './'.
+    expect(join('/', bin['octocode-awareness'] ?? '').replace(/\\/g, '/').slice(1)).toBe('dist/bin/awareness.js');
+    expect(bin).not.toHaveProperty('awareness');
   });
 
   it('--help exits 0', () => {

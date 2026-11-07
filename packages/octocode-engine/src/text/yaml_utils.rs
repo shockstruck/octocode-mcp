@@ -1,4 +1,15 @@
-use serde_yaml_ng::{Mapping, Value as YamlValue};
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
+
+fn yaml_options() -> serde_saphyr::SerializerOptions {
+    serde_saphyr::ser_options! {
+        yaml_12: true,
+        no_lang_directive: true,
+        indent_step: 2,
+        compact_list_indent: true,
+        prefer_block_scalars: true,
+        folded_wrap_chars: usize::MAX,
+    }
+}
 
 /// Convert a `serde_json::Value` into a YAML string.
 ///
@@ -11,64 +22,86 @@ pub fn json_to_yaml_string_inner(
     sort_keys: bool,
     priority_keys: &[String],
 ) -> String {
-    let yaml_val = json_to_yaml_value(json, sort_keys, priority_keys);
-    match serde_yaml_ng::to_string(&yaml_val) {
+    let ordered = OrderedJson {
+        value: &json,
+        sort_keys,
+        priority: priority_keys,
+    };
+    match serde_saphyr::to_string_with_options(&ordered, yaml_options()) {
         Ok(s) => s,
         Err(_) => "# YAML conversion failed\n".to_owned(),
     }
 }
 
-fn json_to_yaml_value(json: serde_json::Value, sort_keys: bool, priority: &[String]) -> YamlValue {
-    match json {
-        serde_json::Value::Object(map) => {
-            let mut keys: Vec<String> = map.keys().cloned().collect();
-            if sort_keys || !priority.is_empty() {
-                keys.sort_by(|a, b| {
-                    let ai = priority.iter().position(|k| k == a);
-                    let bi = priority.iter().position(|k| k == b);
-                    match (ai, bi) {
-                        (Some(x), Some(y)) => x.cmp(&y),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => {
-                            if sort_keys {
-                                a.cmp(b)
-                            } else {
-                                std::cmp::Ordering::Equal
+/// Borrow the input so ordering does not require cloning its recursive values.
+struct OrderedJson<'a> {
+    value: &'a serde_json::Value,
+    sort_keys: bool,
+    priority: &'a [String],
+}
+
+impl Serialize for OrderedJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let sort_keys = self.sort_keys;
+        let priority = self.priority;
+        let child = |value| OrderedJson {
+            value,
+            sort_keys,
+            priority,
+        };
+        match self.value {
+            serde_json::Value::Object(map) => {
+                let mut keys: Vec<String> = map.keys().cloned().collect();
+                if sort_keys || !priority.is_empty() {
+                    keys.sort_by(|a, b| {
+                        let ai = priority.iter().position(|k| k == a);
+                        let bi = priority.iter().position(|k| k == b);
+                        match (ai, bi) {
+                            (Some(x), Some(y)) => x.cmp(&y),
+                            (Some(_), None) => std::cmp::Ordering::Less,
+                            (None, Some(_)) => std::cmp::Ordering::Greater,
+                            (None, None) => {
+                                if sort_keys {
+                                    a.cmp(b)
+                                } else {
+                                    std::cmp::Ordering::Equal
+                                }
                             }
                         }
+                    });
+                }
+                let mut mapping = serializer.serialize_map(Some(keys.len()))?;
+                for key in keys {
+                    if let Some(val) = map.get(&key) {
+                        // Key spelling belongs to the library; preserve identity and order.
+                        mapping.serialize_entry(&key, &child(val))?;
                     }
-                });
+                }
+                mapping.end()
             }
-            let mut mapping = Mapping::new();
-            for key in keys {
-                if let Some(val) = map.get(&key) {
-                    mapping.insert(
-                        YamlValue::String(key),
-                        json_to_yaml_value(val.clone(), sort_keys, priority),
-                    );
+            serde_json::Value::Array(arr) => {
+                let mut sequence = serializer.serialize_seq(Some(arr.len()))?;
+                for value in arr {
+                    sequence.serialize_element(&child(value))?;
+                }
+                sequence.end()
+            }
+            serde_json::Value::String(s) => {
+                // Observe supported scalar rendering rather than duplicating YAML's
+                // resolver/escaping rules. At most two extra scalar serializations;
+                // controls rejected by SingleQuoted retain normal escaping.
+                let normal = serde_saphyr::to_string_with_options(s, yaml_options())
+                    .map_err(serde::ser::Error::custom)?;
+                let single = serde_saphyr::SingleQuoted(s);
+                if normal.starts_with('"')
+                    && serde_saphyr::to_string_with_options(&single, yaml_options()).is_ok()
+                {
+                    single.serialize(serializer)
+                } else {
+                    s.serialize(serializer)
                 }
             }
-            YamlValue::Mapping(mapping)
-        }
-        serde_json::Value::Array(arr) => YamlValue::Sequence(
-            arr.into_iter()
-                .map(|v| json_to_yaml_value(v, sort_keys, priority))
-                .collect(),
-        ),
-        serde_json::Value::String(s) => YamlValue::String(s),
-        serde_json::Value::Bool(b) => YamlValue::Bool(b),
-        serde_json::Value::Null => YamlValue::Null,
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                YamlValue::Number(i.into())
-            } else if let Some(u) = n.as_u64() {
-                YamlValue::Number(u.into())
-            } else if let Some(f) = n.as_f64() {
-                YamlValue::Number(serde_yaml_ng::Number::from(f))
-            } else {
-                YamlValue::String(n.to_string())
-            }
+            value => value.serialize(serializer),
         }
     }
 }
@@ -148,6 +181,59 @@ mod tests {
         assert_eq!(
             emit(json!({"a": [1, "x"], "b": {"c": null}})),
             "a:\n- 1\n- x\nb:\n  c: null\n"
+        );
+    }
+
+    #[test]
+    fn scalar_style_probe_preserves_quotes_controls_and_chomping() {
+        assert_eq!(
+            emit(json!({"v": "it's: \"quoted\""})),
+            "v: 'it''s: \"quoted\"'\n"
+        );
+        assert_eq!(
+            emit(json!({"v": "line1\nline2\n\n"})),
+            "v: |+\n  line1\n  line2\n\n"
+        );
+        assert_eq!(emit(json!({"v": "\r\t\0"})), "v: \"\\r\\t\\0\"\n");
+        let long = "a long line with words ".repeat(8);
+        assert_eq!(
+            emit(json!({"v": long.trim_end()})),
+            format!("v: {}\n", long.trim_end())
+        );
+    }
+
+    #[test]
+    fn quoted_keys_and_values_round_trip_without_changing_identity() {
+        let keys = [
+            "",
+            "true",
+            "123",
+            "no",
+            "a: b",
+            "it's: quoted",
+            " leading",
+            "trailing ",
+            "line1\nline2",
+            "\r\t\0",
+            "\u{85}",
+            "\u{2028}",
+            "\u{2029}",
+        ];
+        let input = serde_json::Value::Object(
+            keys.into_iter()
+                .map(|key| (key.to_owned(), json!([key, {"true": key}])))
+                .collect(),
+        );
+        let output = json_to_yaml_string_inner(input.clone(), true, &["true".into()]);
+        let decoded: serde_json::Value = serde_saphyr::from_str_with_options(
+            &output,
+            serde_saphyr::options! { strict_booleans: true },
+        )
+        .expect("valid YAML 1.2");
+        assert_eq!(decoded, input);
+        assert!(
+            output.starts_with("\"true\":"),
+            "priority applies to quoted keys"
         );
     }
 }

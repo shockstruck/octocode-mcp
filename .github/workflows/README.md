@@ -24,6 +24,7 @@ yarn health:check
 yarn docs:verify
 yarn build
 yarn lint
+yarn typecheck
 yarn test
 # From the repository root, install the pinned audit tool:
 cargo install cargo-audit --version 0.22.2 --locked

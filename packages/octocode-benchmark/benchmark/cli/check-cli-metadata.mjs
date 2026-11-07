@@ -97,7 +97,7 @@ function validateCanonicalToolMetadata() {
   );
   for (const phrase of [
     'Start broad, go specific',
-    "Each tool's schema explains",
+    'Before raw calls, read the schema — it documents modes, bounds, defaults, and tradeoffs this summary omits.',
     'Failures are signals',
   ]) {
     assert(
@@ -391,6 +391,59 @@ function validateCliToolSurfaces(toolNames) {
   }
 }
 
+// Independent expectations for this fork's supported skill contract, documented
+// in packages/octocode/docs/OCTOCODE_CLI.md and implemented by commands/skill.ts.
+// command-help-specs.ts deliberately replaces these upstream scheme lines. Do
+// not import its patched spec: a renderer regression must still fail this gate.
+const SKILL_SCHEME_OVERRIDES = new Map([
+  [
+    'required source:',
+    'required source: pass exactly one of --add <github-folder>, --add --path <local-skill-or-skills-dir>, --name <octocode-skill>, or --install-all. --name checks bundled skills first, then falls back to GitHub.',
+  ],
+  [
+    '--name must',
+    '--name must be a safe official skill name such as octocode-awareness or octocode-research. Run with --list to see available Octocode skill names.',
+  ],
+  [
+    '--platform',
+    '--platform (alias --target, default: common) accepts comma-separated values: common (-> ~/.agents/skills), cursor (-> ~/.cursor/skills), claude (-> Claude Code + Claude Desktop skill folders), codex (-> ~/.agents/skills), opencode (-> ~/.config/opencode/skills), pi (-> ~/.pi/agent/skills), copilot, gemini, or all. --all is shorthand for --platform all.',
+  ],
+  [
+    'platform paths:',
+    'platform paths: common/codex -> ~/.agents/skills, cursor -> ~/.cursor/skills, opencode -> ~/.config/opencode/skills, pi -> ~/.pi/agent/skills, claude -> Claude Code plus Claude Desktop skill folders. Windows uses platform-appropriate AppData paths.',
+  ],
+  [
+    'install mode:',
+    'install mode: symlink (default) links each target to the Octocode-managed source cache; copy embeds a standalone copy; hybrid uses copy for claude targets and symlink for everything else.',
+  ],
+  [
+    'output:',
+    'output: human summary by default; --json returns success, skills[], platforms, mode, and installed/skipped/failed counts.',
+  ],
+]);
+
+function commandSchemeExpectations(spec) {
+  if (spec.name !== 'skill') return spec.scheme;
+
+  for (const prefix of SKILL_SCHEME_OVERRIDES.keys()) {
+    assert(
+      spec.scheme.filter(line => line.startsWith(prefix)).length === 1,
+      `skill: expected exactly one upstream scheme line for override ${prefix}`
+    );
+  }
+  return [
+    ...spec.scheme.map(line => {
+      const override = [...SKILL_SCHEME_OVERRIDES].find(([prefix]) =>
+        line.startsWith(prefix)
+      );
+      return override ? override[1] : line;
+    }),
+    '--install-all installs every current official Octocode skill; --all-skills is an alias.',
+    '--add --path <local-skill-or-skills-dir> installs from a local skill folder, SKILL.md, or direct-child skills library without resolving GitHub.',
+    'additional platforms: copilot and gemini are accepted by this CLI build.',
+  ];
+}
+
 function validateCliCommandSurfaces(commandNames) {
   const mainHelp = runCli(['--help', '--no-color']);
   // `pr` was folded into `search owner/repo#N --target pullRequests` (same
@@ -434,7 +487,7 @@ function validateCliCommandSurfaces(commandNames) {
       includesNormalized(help, spec.description),
       `${commandName}: help must include canonical description: ${snippet(spec.description)}`
     );
-    for (const schemeLine of spec.scheme) {
+    for (const schemeLine of commandSchemeExpectations(spec)) {
       assert(
         includesNormalized(help, schemeLine),
         `${commandName}: help must include scheme line: ${snippet(schemeLine)}`
@@ -444,6 +497,12 @@ function validateCliCommandSurfaces(commandNames) {
       assert(
         help.includes(`--${option.name}`),
         `${commandName}: help must document --${option.name}`
+      );
+    }
+    if (commandName === 'skill') {
+      assert(
+        help.includes('--path <value>'),
+        'skill: help must document the local source --path option with a value'
       );
     }
   }

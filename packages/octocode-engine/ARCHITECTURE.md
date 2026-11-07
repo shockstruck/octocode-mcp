@@ -85,7 +85,7 @@ entrypoint policy and agent-facing packets stay in `octocode-tools-core` / OQL.
 `optionalDependencies`, and every `npm/<platform>/package.json` to match it.
 
 - NAPI: `napi`, `napi-derive`; build: `napi-build`; dev: `napi`.
-- Serialization/text: `serde`, `serde_json`, `serde_yaml_ng`, `regex`, `url`.
+- Serialization/text: `serde`, `serde_json`, `serde-saphyr`, `regex`, `url`.
 - Async/process/LSP: `tokio`, `lsp-types`, `which`.
 - Search: `grep`, `ignore`.
 - Minify/JS/CSS: `lightningcss`, `oxc_allocator`, `oxc_ast`, `oxc_codegen`,

@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
-use serde::Deserialize;
 use tree_sitter::{Language, Node, Parser, Tree};
 
 use super::language::AgLanguage;
@@ -837,32 +836,8 @@ fn is_capture_name(name: &str) -> bool {
             .all(|ch| ch == '_' || ch.is_ascii_uppercase() || ch.is_ascii_digit())
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawRuleDocument {
-    rule: RawRule,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawRule {
-    kind: Option<String>,
-    pattern: Option<String>,
-    regex: Option<String>,
-    has: Option<Box<RawRule>>,
-    inside: Option<Box<RawRule>>,
-    all: Option<Vec<RawRule>>,
-    any: Option<Vec<RawRule>>,
-    not: Option<Box<RawRule>>,
-    #[serde(rename = "stopBy")]
-    stop_by: Option<RawStopBy>,
-}
-
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-enum RawStopBy {
-    End,
-}
+mod rule_yaml;
+use rule_yaml::{RawRule, RawStopBy};
 
 struct CompiledRule {
     kind: Option<String>,
@@ -882,19 +857,7 @@ impl CompiledRule {
     /// rule (`kind: ...`). A top-level `rule` key is unambiguous: `RawRule` has
     /// no such field, so a bare rule can never contain one.
     fn new(lang: &AgLanguage, rule: &str) -> Result<Self, String> {
-        let value: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(rule).map_err(|err| format!("invalid rule YAML: {err}"))?;
-        let wrapped = value
-            .as_mapping()
-            .is_some_and(|mapping| mapping.contains_key("rule"));
-        let raw: RawRule = if wrapped {
-            serde_yaml_ng::from_value::<RawRuleDocument>(value)
-                .map_err(|err| format!("invalid rule YAML: {err}"))?
-                .rule
-        } else {
-            serde_yaml_ng::from_value(value)
-                .map_err(|err| format!("invalid rule YAML: {err}"))?
-        };
+        let raw = rule_yaml::parse(rule)?;
         Self::compile(lang, raw)
     }
 
@@ -1571,7 +1534,8 @@ mod tests {
         // engine must accept it without a top-level `rule:` key.
         let src = "mod tests { fn t() { let v = w.unwrap(); } }\n";
         let bare = "pattern: $X.unwrap()\ninside:\n  kind: mod_item\n  stopBy: end\n";
-        let wrapped = "rule:\n  pattern: $X.unwrap()\n  inside:\n    kind: mod_item\n    stopBy: end\n";
+        let wrapped =
+            "rule:\n  pattern: $X.unwrap()\n  inside:\n    kind: mod_item\n    stopBy: end\n";
 
         let bare_matches = run_rule(src, "rs", bare);
         let wrapped_matches = run_rule(src, "rs", wrapped);
@@ -1586,6 +1550,28 @@ mod tests {
             bare_matches[0].metavars.get("X").map(Vec::as_slice),
             Some(&["w".to_string()][..])
         );
+    }
+
+    #[test]
+    fn yaml_adapter_keeps_compilation_errors_and_tagged_stop_by_behavior() {
+        for input in ["", "null", "rule: null", "all: [null]", "has: {}"] {
+            let error = CompiledRule::new(&lang("ts"), input)
+                .err()
+                .expect("empty rule fails compilation");
+            assert_eq!(
+                error,
+                "invalid rule: rule must contain at least one matcher"
+            );
+        }
+        assert!(CompiledRule::new(&lang("ts"), "regex: '['")
+            .err()
+            .expect("invalid regex")
+            .starts_with("invalid rule regex:"));
+        let src = "async function f() { for (const x of xs) { await g(x); } await h(); }";
+        let tagged = "pattern: await $C\ninside: {kind: for_in_statement, stopBy: !end null}";
+        let matches = run_rule(src, "ts", tagged);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text, "await g(x)");
     }
 
     #[test]

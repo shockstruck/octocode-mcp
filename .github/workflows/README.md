@@ -10,21 +10,23 @@ This directory contains the active GitHub Actions workflows for the Octocode mon
 
 ## CI (`ci.yml`)
 
-The pull request workflow runs one `ci` job. Its steps run serially in this order: set up
-Rust and Node.js, install dependencies, check workspace health, verify docs, lint, build,
-verify build outputs, typecheck, test, audit Rust dependencies, then upload per-package
-coverage artifacts. Build runs before typecheck because workspace packages consume compiled
-sibling outputs.
+The pull request workflow runs one `ci` job, with steps executed serially: set up Rust and
+Node.js, enable Corepack, install dependencies, check workspace health, verify docs, build,
+lint, verify build outputs, typecheck, test, install the pinned `cargo-audit` version, audit
+Rust dependencies, then upload per-package coverage artifacts. Build precedes lint and
+typecheck because workspace packages consume compiled sibling outputs. Coverage upload runs
+even if an earlier step fails.
 
 Useful local commands before opening a PR:
 
 ```bash
 yarn health:check
 yarn docs:verify
-yarn lint
-yarn typecheck
 yarn build
+yarn lint
 yarn test
+# From the repository root, install the pinned audit tool:
+cargo install cargo-audit --version 0.22.2 --locked
 # From packages/octocode-engine:
 cargo audit -D unmaintained -D unsound -D yanked
 ```

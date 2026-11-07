@@ -892,8 +892,7 @@ impl CompiledRule {
                 .map_err(|err| format!("invalid rule YAML: {err}"))?
                 .rule
         } else {
-            serde_yaml_ng::from_value(value)
-                .map_err(|err| format!("invalid rule YAML: {err}"))?
+            serde_yaml_ng::from_value(value).map_err(|err| format!("invalid rule YAML: {err}"))?
         };
         Self::compile(lang, raw)
     }
@@ -1571,7 +1570,8 @@ mod tests {
         // engine must accept it without a top-level `rule:` key.
         let src = "mod tests { fn t() { let v = w.unwrap(); } }\n";
         let bare = "pattern: $X.unwrap()\ninside:\n  kind: mod_item\n  stopBy: end\n";
-        let wrapped = "rule:\n  pattern: $X.unwrap()\n  inside:\n    kind: mod_item\n    stopBy: end\n";
+        let wrapped =
+            "rule:\n  pattern: $X.unwrap()\n  inside:\n    kind: mod_item\n    stopBy: end\n";
 
         let bare_matches = run_rule(src, "rs", bare);
         let wrapped_matches = run_rule(src, "rs", wrapped);

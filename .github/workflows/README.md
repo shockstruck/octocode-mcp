@@ -10,12 +10,11 @@ This directory contains the active GitHub Actions workflows for the Octocode mon
 
 ## CI (`ci.yml`)
 
-The pull request workflow runs two parallel jobs to minimize wall-clock time:
-
-1. `checks` — Health, Lint & Typecheck
-   Runs `yarn health:check`, `yarn docs:verify`, `yarn lint`, builds shared types, then `yarn typecheck`.
-2. `build-and-test` — Build & Test
-   Runs `yarn build`, verifies outputs, then `yarn test` and uploads per-package coverage artifacts.
+The pull request workflow runs one `ci` job. Its steps run serially in this order: set up
+Rust and Node.js, install dependencies, check workspace health, verify docs, lint, build,
+verify build outputs, typecheck, test, audit Rust dependencies, then upload per-package
+coverage artifacts. Build runs before typecheck because workspace packages consume compiled
+sibling outputs.
 
 Useful local commands before opening a PR:
 
@@ -26,6 +25,8 @@ yarn lint
 yarn typecheck
 yarn build
 yarn test
+# From packages/octocode-engine:
+cargo audit -D unmaintained -D unsound -D yanked
 ```
 
 If you want the full repo contract in one command, run:
